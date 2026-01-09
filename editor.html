@@ -1,0 +1,567 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <title>Thumbnail Editor</title>
+    <script src="https://unpkg.com/konva@9/konva.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/heic2any@0.0.4/dist/heic2any.min.js"></script>
+    <style>
+        :root { --primary: #007AFF; --danger: #FF3B30; --bg: #f5f5f7; --border: #d2d2d7; }
+        body { background-color: var(--bg); display: flex; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; margin: 0; height: 100vh; overflow: hidden; }
+        
+        /* 로딩 인디케이터 */
+        #loading-overlay {
+            position: fixed; top: 0; left: 0; width: 100%; height: 100%;
+            background: rgba(255,255,255,0.8); z-index: 9999;
+            display: none; justify-content: center; align-items: center; flex-direction: column;
+        }
+        .spinner {
+            width: 40px; height: 40px; border: 4px solid #f3f3f3; border-top: 4px solid var(--primary); border-radius: 50%;
+            animation: spin 1s linear infinite; margin-bottom: 10px;
+        }
+        @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
+
+        /* 사이드바 */
+        #sidebar { width: 320px; background: white; border-right: 1px solid var(--border); padding: 20px; display: flex; flex-direction: column; gap: 16px; z-index: 20; box-shadow: 4px 0 15px rgba(0,0,0,0.03); overflow-y: auto; }
+        .control-group { display: flex; flex-direction: column; gap: 6px; border-bottom: 1px solid #eee; padding-bottom: 14px; }
+        label { font-size: 12px; font-weight: 600; color: #666; margin-bottom: 2px; display: flex; justify-content: space-between; }
+        input[type="number"], input[type="text"] { padding: 8px 10px; border: 1px solid var(--border); border-radius: 6px; font-size: 13px; transition: border 0.2s; }
+        input[type="number"]:focus, input[type="text"]:focus { border-color: var(--primary); outline: none; }
+        
+        /* 레이어 리스트 */
+        #layer-list { list-style: none; padding: 0; margin: 0; max-height: 250px; overflow-y: auto; border: 1px solid #f0f0f0; border-radius: 6px; }
+        .layer-item { 
+            display: flex; align-items: center; padding: 10px 12px; 
+            border-bottom: 1px solid #f0f0f0; background: #fff; 
+            cursor: grab; font-size: 12px; transition: 0.2s; user-select: none;
+        }
+        .layer-item:active { cursor: grabbing; }
+        .layer-item:last-child { border-bottom: none; }
+        .layer-item:hover { background: #f9f9f9; }
+        .layer-item.selected { background: #eef7ff; border-left: 4px solid var(--primary); padding-left: 8px; }
+        .layer-item.drag-over-top { border-top: 2px solid var(--primary); }
+        .layer-item.drag-over-bottom { border-bottom: 2px solid var(--primary); }
+
+        /* 버튼 스타일 */
+        button { cursor: pointer; }
+        .btn-main { background: var(--primary); color: white; border: none; font-weight: 600; padding: 12px; font-size: 14px; width: 100%; border-radius: 6px; transition: background 0.2s; text-align: center; }
+        .btn-main:hover { background: #0062cc; box-shadow: 0 2px 5px rgba(0,98,204,0.3); }
+        .btn-reset { background: white; color: var(--danger); border: 1px solid var(--danger); font-weight: 600; padding: 10px; font-size: 13px; width: 100%; border-radius: 6px; margin-top: 5px; }
+        .btn-reset:hover { background: #fff5f5; }
+
+        input[type="file"] { display: none; }
+
+        /* 메인 영역 */
+        #main { flex: 1; display: flex; flex-direction: column; background: #e9e9ee; position: relative; overflow: hidden; }
+        #canvas-wrapper { flex: 1; display: flex; align-items: center; justify-content: center; overflow: auto; padding: 40px; }
+        #canvas-container { background: white; box-shadow: 0 10px 40px rgba(0,0,0,0.15); border-radius: 2px; transition: transform 0.1s; }
+        
+        #zoom-controls { position: absolute; bottom: 20px; right: 20px; background: white; padding: 8px 12px; border-radius: 20px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); display: flex; align-items: center; gap: 10px; z-index: 10; font-size: 12px; font-weight: 600; }
+        input[type="range"] { width: 100px; cursor: pointer; }
+
+        .helper-text { font-size: 11px; color: #999; line-height: 1.5; margin-top: 10px; }
+    </style>
+</head>
+<body>
+
+<div id="loading-overlay">
+    <div class="spinner"></div>
+    <div style="font-weight: 600; color: #333;">작업 중...</div>
+</div>
+
+<div id="sidebar">
+    <h3>🖼️ Thumbnail Editor</h3>
+    
+    <div class="control-group">
+        <label>이미지 추가 (최대 5개)</label>
+        <input type="file" id="file-input" accept=".jpg, .jpeg, .png, .heic" multiple>
+        <button class="btn-main" onclick="document.getElementById('file-input').click()">📁 파일 업로드</button>
+    </div>
+
+    <div class="control-group">
+        <label>크기 조절 <span>(Enter 입력 시 적용)</span></label>
+        <div style="display: flex; gap: 8px;">
+            <div style="flex: 1;">W <input type="number" id="input-w" placeholder="Width"></div>
+            <div style="flex: 1;">H <input type="number" id="input-h" placeholder="Height"></div>
+        </div>
+    </div>
+
+    <div class="control-group" style="flex: 1; min-height: 150px;">
+        <label>레이어 목록 <span style="font-weight:400; font-size:11px; color:#999;">(드래그하여 순서 변경)</span></label>
+        <ul id="layer-list"></ul>
+    </div>
+
+    <div class="control-group" style="border: none; padding-bottom: 0;">
+        <button class="btn-main" onclick="app.downloadPNG()">💾 PNG 추출하기</button>
+        <button class="btn-reset" onclick="app.resetAll()">🔄 전체 초기화</button>
+    </div>
+
+    <div class="helper-text">
+        • <b>레이어 선택 후</b>: 화면 드래그로 이동<br>
+        • <b>복사/붙여넣기</b>: Cmd+C / V (위치/크기 유지)<br>
+        • <b>실행 취소</b>: Cmd+Z (이미지 보존됨)
+    </div>
+</div>
+
+<div id="main">
+    <div id="canvas-wrapper">
+        <div id="canvas-container"></div>
+    </div>
+    <div id="zoom-controls">
+        <span>🔍 화면 배율</span>
+        <input type="range" id="zoom-range" min="0.2" max="1.5" step="0.1" value="0.8">
+        <span id="zoom-val">80%</span>
+    </div>
+</div>
+
+<script>
+    // ==========================================
+    // 앱 설정 및 상태
+    // ==========================================
+    const CONFIG = {
+        FRAME_W: 1200, FRAME_H: 680,
+        STAGE_W: 1600, STAGE_H: 1000,
+        MAX_HISTORY: 20, MAX_LAYERS: 6
+    };
+    
+    const OFFSET_X = (CONFIG.STAGE_W - CONFIG.FRAME_W) / 2;
+    const OFFSET_Y = (CONFIG.STAGE_H - CONFIG.FRAME_H) / 2;
+
+    const state = {
+        history: [], historyStep: -1,
+        clipboard: null, draggedId: null,
+        isDragging: false, dragStartPos: null,
+        selectedId: null
+    };
+
+    // [캐시] 이미지 소스 저장소
+    let globalImageCache = {};
+
+    // ==========================================
+    // 1. Konva 스테이지 및 레이어
+    // ==========================================
+    const stage = new Konva.Stage({ container: 'canvas-container', width: CONFIG.STAGE_W, height: CONFIG.STAGE_H });
+    const contentLayer = new Konva.Layer();
+    const uiLayer = new Konva.Layer(); 
+    stage.add(contentLayer);
+    stage.add(uiLayer);
+
+    const workFrame = new Konva.Rect({
+        x: OFFSET_X, y: OFFSET_Y, width: CONFIG.FRAME_W, height: CONFIG.FRAME_H,
+        stroke: '#007AFF', strokeWidth: 1.5, dash: [6, 4],
+        listening: false, name: 'ui-frame', opacity: 0.5
+    });
+    uiLayer.add(workFrame);
+
+    const tr = new Konva.Transformer({ 
+        keepRatio: true, 
+        enabledAnchors: ['top-left', 'top-right', 'bottom-left', 'bottom-right'],
+        borderStroke: '#007AFF', anchorStroke: '#007AFF', anchorFill: '#fff', anchorSize: 9, padding: 2
+    });
+    uiLayer.add(tr);
+
+    // ==========================================
+    // 2. 유틸리티
+    // ==========================================
+    function formatFileName(name) {
+        if (!name) return '이미지';
+        const extIndex = name.lastIndexOf('.');
+        if (extIndex === -1) return name.length > 10 ? name.substring(0, 10) + '...' : name;
+        const ext = name.substring(extIndex);
+        const base = name.substring(0, extIndex);
+        return base.length > 10 ? base.substring(0, 10) + '..' + ext : name;
+    }
+
+    // ==========================================
+    // 3. 핵심 기능 로직
+    // ==========================================
+    const app = {
+        initOverlay: () => {
+            const overlay = new Konva.Rect({
+                x: OFFSET_X, y: OFFSET_Y, width: CONFIG.FRAME_W, height: CONFIG.FRAME_H,
+                fill: '#121212', opacity: 0.6,
+                draggable: false, name: 'object', id: 'fixed-overlay'
+            });
+            overlay.setAttr('metaName', '[고정] 배경 오버레이');
+            contentLayer.add(overlay);
+            app.updateLayerList(); 
+        },
+
+        setLoading: (isLoading) => {
+            document.getElementById('loading-overlay').style.display = isLoading ? 'flex' : 'none';
+        },
+
+        saveHistory: () => {
+            state.historyStep++;
+            state.history = state.history.slice(0, state.historyStep);
+            state.history.push(contentLayer.toJSON());
+            if (state.history.length > CONFIG.MAX_HISTORY) { state.history.shift(); state.historyStep--; }
+        },
+
+        undo: () => {
+            if (state.historyStep > 0) {
+                state.historyStep--;
+                contentLayer.destroyChildren();
+                
+                const prevLayer = Konva.Node.create(state.history[state.historyStep]);
+                
+                prevLayer.getChildren().forEach(node => {
+                    node.moveTo(contentLayer);
+                    // 이미지 소스 복구
+                    if (node.getClassName() === 'Image') {
+                        const imgSource = globalImageCache[node.id()];
+                        if (imgSource) node.image(imgSource);
+                    }
+                    // 이벤트 재연결
+                    if (node.id() !== 'fixed-overlay') {
+                        app.setupNodeEvents(node);
+                    }
+                });
+                
+                tr.nodes([]); state.selectedId = null;
+                app.updateLayerList(); app.updateInputs(null);
+                contentLayer.batchDraw(); uiLayer.batchDraw();
+            }
+        },
+
+        // [개선 1] 전체 초기화 시 메모리 캐시도 정리
+        resetAll: () => {
+            if (!confirm("모든 레이어와 작업 내역이 삭제됩니다. 초기화 하시겠습니까?")) return;
+            
+            contentLayer.destroyChildren();
+            tr.nodes([]);
+            uiLayer.find('.guideline').forEach(l => l.destroy());
+            
+            state.history = [];
+            state.historyStep = -1;
+            state.selectedId = null;
+            state.clipboard = null;
+            
+            // 캐시 초기화 (메모리 해제)
+            globalImageCache = {};
+            
+            app.initOverlay();
+            app.saveHistory(); 
+            app.updateLayerList();
+            app.updateInputs(null);
+            contentLayer.batchDraw();
+            uiLayer.batchDraw();
+        },
+
+        // [개선 2] 이벤트 연결 로직 통합 및 커서 스타일 추가
+        setupNodeEvents: (node) => {
+            node.on('transform', (e) => { app.snapToGuides(e.target); app.updateInputs(e.target); });
+            node.on('transformend', () => { 
+                uiLayer.find('.guideline').forEach(l => l.destroy()); 
+                app.saveHistory(); 
+                app.updateInputs(node); 
+            });
+            // 커서 피드백
+            node.on('mouseenter', () => stage.container().style.cursor = 'grab');
+            node.on('mouseleave', () => stage.container().style.cursor = 'default');
+        },
+
+        snapToGuides: (node) => {
+            uiLayer.find('.guideline').forEach(l => l.destroy());
+            const box = node.getClientRect();
+            const abs = node.absolutePosition();
+            const guides = { x: [OFFSET_X, OFFSET_X + CONFIG.FRAME_W/2, OFFSET_X + CONFIG.FRAME_W], y: [OFFSET_Y, OFFSET_Y + CONFIG.FRAME_H/2, OFFSET_Y + CONFIG.FRAME_H] };
+            const SNAP_DIST = 5; 
+            guides.x.forEach(gx => {
+                const diffs = [Math.abs(box.x - gx), Math.abs(box.x + box.width/2 - gx), Math.abs(box.x + box.width - gx)];
+                const minDiff = Math.min(...diffs);
+                if (minDiff < SNAP_DIST) {
+                    uiLayer.add(new Konva.Line({ points: [gx, 0, gx, CONFIG.STAGE_H], stroke: '#FF3B30', dash: [4, 4], name: 'guideline' }));
+                    if (diffs[0] === minDiff) node.x(gx + (abs.x - box.x)); else if (diffs[1] === minDiff) node.x(gx + (abs.x - (box.x + box.width/2))); else node.x(gx + (abs.x - (box.x + box.width)));
+                }
+            });
+            guides.y.forEach(gy => {
+                const diffs = [Math.abs(box.y - gy), Math.abs(box.y + box.height/2 - gy), Math.abs(box.y + box.height - gy)];
+                const minDiff = Math.min(...diffs);
+                if (minDiff < SNAP_DIST) {
+                    uiLayer.add(new Konva.Line({ points: [0, gy, CONFIG.STAGE_W, gy], stroke: '#FF3B30', dash: [4, 4], name: 'guideline' }));
+                    if (diffs[0] === minDiff) node.y(gy + (abs.y - box.y)); else if (diffs[1] === minDiff) node.y(gy + (abs.y - (box.y + box.height/2))); else node.y(gy + (abs.y - (box.y + box.height)));
+                }
+            });
+        },
+
+        updateInputs: (node) => {
+            const wInput = document.getElementById('input-w');
+            const hInput = document.getElementById('input-h');
+            if (!node || node.id() === 'fixed-overlay') { wInput.value = ''; hInput.value = ''; return; }
+            wInput.value = Math.round(node.width() * node.scaleX());
+            hInput.value = Math.round(node.height() * node.scaleY());
+        },
+
+        updateLayerList: () => {
+            const list = document.getElementById('layer-list');
+            list.innerHTML = '';
+            const nodes = contentLayer.find('.object');
+            
+            [...nodes].reverse().forEach((node) => {
+                const li = document.createElement('li');
+                const isSelected = state.selectedId === node.id();
+                const isOverlay = node.id() === 'fixed-overlay';
+                
+                li.className = 'layer-item' + (isSelected ? ' selected' : '');
+                li.draggable = true;
+                li.dataset.id = node.id();
+                
+                const rawName = node.getAttr('metaName') || '이미지';
+                const displayName = isOverlay ? rawName : formatFileName(rawName);
+                const icon = isOverlay ? '🔒' : '🖼️';
+
+                li.innerHTML = `<span style="${isOverlay ? 'font-weight:600; color:#444;' : ''}">${icon} ${displayName}</span>`;
+                li.addEventListener('click', () => { app.selectNode(node); });
+                
+                li.addEventListener('dragstart', (e) => { state.draggedId = node.id(); e.dataTransfer.effectAllowed = 'move'; li.style.opacity = '0.5'; });
+                li.addEventListener('dragend', () => { li.style.opacity = '1'; list.querySelectorAll('.layer-item').forEach(el => el.classList.remove('drag-over-top', 'drag-over-bottom')); });
+                li.addEventListener('dragover', (e) => {
+                    e.preventDefault(); if (state.draggedId === node.id()) return;
+                    const rect = li.getBoundingClientRect();
+                    if (e.clientY < rect.top + rect.height/2) { li.classList.add('drag-over-top'); li.classList.remove('drag-over-bottom'); }
+                    else { li.classList.add('drag-over-bottom'); li.classList.remove('drag-over-top'); }
+                });
+                li.addEventListener('drop', (e) => {
+                    e.preventDefault(); const targetId = node.id();
+                    if (state.draggedId === targetId) return;
+                    const draggedNode = contentLayer.findOne('#' + state.draggedId);
+                    const targetNode = contentLayer.findOne('#' + targetId);
+                    draggedNode.setZIndex(targetNode.zIndex());
+                    app.saveHistory(); app.updateLayerList(); contentLayer.batchDraw();
+                });
+                list.appendChild(li);
+            });
+        },
+
+        selectNode: (node) => {
+            state.selectedId = node ? node.id() : null;
+            if (node) {
+                if (node.id() === 'fixed-overlay') { tr.nodes([]); } 
+                else { tr.nodes([node]); tr.moveToTop(); }
+                app.updateInputs(node);
+            } else {
+                tr.nodes([]); app.updateInputs(null);
+            }
+            app.updateLayerList(); contentLayer.batchDraw(); uiLayer.batchDraw();
+        },
+
+        downloadPNG: async () => {
+            tr.nodes([]); uiLayer.find('.guideline').forEach(l => l.destroy());
+            workFrame.visible(false); contentLayer.draw(); uiLayer.draw();
+
+            const dataURL = stage.toDataURL({ x: OFFSET_X, y: OFFSET_Y, width: CONFIG.FRAME_W, height: CONFIG.FRAME_H, pixelRatio: 2 });
+            const date = new Date();
+            const defaultName = `thumbnail_${date.getTime()}.png`;
+
+            if (window.showSaveFilePicker) {
+                try {
+                    const handle = await window.showSaveFilePicker({
+                        suggestedName: defaultName,
+                        types: [{ description: 'PNG Image', accept: {'image/png': ['.png']} }],
+                    });
+                    const writable = await handle.createWritable();
+                    const blob = await (await fetch(dataURL)).blob();
+                    await writable.write(blob);
+                    await writable.close();
+                } catch (err) { /* 취소됨 */ }
+            } else {
+                const link = document.createElement('a');
+                link.download = defaultName;
+                link.href = dataURL;
+                document.body.appendChild(link); link.click(); document.body.removeChild(link);
+            }
+
+            workFrame.visible(true); uiLayer.draw();
+        }
+    };
+
+    // ==========================================
+    // 4. 이벤트 리스너
+    // ==========================================
+    app.initOverlay();
+    app.saveHistory();
+
+    document.getElementById('file-input').addEventListener('change', async (e) => {
+        const files = Array.from(e.target.files);
+        if (files.length === 0) return;
+        
+        // [개선 3] 파일 유효성 검사
+        const validFiles = files.filter(f => f.type.startsWith('image/') || f.name.toLowerCase().endsWith('.heic'));
+        if (validFiles.length !== files.length) {
+            alert("이미지 파일만 업로드 가능합니다.");
+        }
+        if (validFiles.length + contentLayer.find('.object').length > CONFIG.MAX_LAYERS) { 
+            alert("레이어 개수 초과"); return; 
+        }
+
+        app.setLoading(true);
+
+        for (let file of validFiles) {
+            try {
+                let url = URL.createObjectURL(file);
+                if (file.name.toLowerCase().endsWith('.heic')) {
+                    const blob = await heic2any({ blob: file, toType: "image/jpeg", quality: 0.8 });
+                    url = URL.createObjectURL(blob);
+                }
+                Konva.Image.fromURL(url, (img) => {
+                    const id = 'img_' + Date.now() + Math.random().toString(36).substr(2, 5);
+                    globalImageCache[id] = img.image(); // 캐시 저장
+
+                    img.setAttrs({
+                        x: OFFSET_X + 100, y: OFFSET_Y + 100,
+                        name: 'object', id: id,
+                        draggable: false, 
+                        metaName: file.name
+                    });
+                    const scale = Math.min(CONFIG.FRAME_W / img.width(), CONFIG.FRAME_H / img.height()) * 0.5;
+                    img.scale({ x: scale, y: scale });
+                    
+                    app.setupNodeEvents(img);
+
+                    contentLayer.add(img);
+                    app.selectNode(img); 
+                    app.saveHistory();
+                });
+            } catch (err) { console.error(err); }
+        }
+        setTimeout(() => app.setLoading(false), 500);
+        e.target.value = '';
+    });
+
+    stage.on('mousedown', (e) => {
+        if (e.target.getParent() instanceof Konva.Transformer) return;
+        const clickedNode = e.target;
+        const isBackground = clickedNode === stage;
+
+        if (state.selectedId) {
+            if (state.selectedId === 'fixed-overlay') {
+                if (!isBackground && clickedNode.hasName('object') && clickedNode.id() !== 'fixed-overlay') {
+                     app.selectNode(clickedNode);
+                     state.isDragging = true; state.dragStartPos = stage.getPointerPosition();
+                }
+                return; 
+            }
+            state.isDragging = true; state.dragStartPos = stage.getPointerPosition();
+            stage.container().style.cursor = 'grabbing';
+        } else {
+            if (!isBackground && clickedNode.hasName('object')) {
+                app.selectNode(clickedNode);
+                if (clickedNode.id() !== 'fixed-overlay') {
+                    state.isDragging = true; state.dragStartPos = stage.getPointerPosition();
+                    stage.container().style.cursor = 'grabbing';
+                }
+            } else {
+                app.selectNode(null);
+            }
+        }
+    });
+
+    stage.on('mousemove', (e) => {
+        if (!state.isDragging || !state.selectedId) return;
+        if (state.selectedId === 'fixed-overlay') return; 
+
+        const selectedNode = contentLayer.findOne('#' + state.selectedId);
+        if (!selectedNode) return;
+
+        const pos = stage.getPointerPosition();
+        const dx = pos.x - state.dragStartPos.x;
+        const dy = pos.y - state.dragStartPos.y;
+
+        selectedNode.x(selectedNode.x() + dx);
+        selectedNode.y(selectedNode.y() + dy);
+        app.snapToGuides(selectedNode);
+
+        state.dragStartPos = pos;
+        contentLayer.batchDraw(); uiLayer.batchDraw();
+    });
+
+    stage.on('mouseup', () => {
+        if (state.isDragging) {
+            state.isDragging = false;
+            uiLayer.find('.guideline').forEach(l => l.destroy());
+            app.saveHistory(); uiLayer.batchDraw();
+            stage.container().style.cursor = 'default';
+        }
+    });
+
+    window.addEventListener('keydown', (e) => {
+        if (e.target.tagName === 'INPUT') return;
+        const isMac = navigator.platform.toUpperCase().includes('MAC');
+        const ctrl = isMac ? e.metaKey : e.ctrlKey;
+        
+        if (ctrl && e.key.toLowerCase() === 'z') { e.preventDefault(); app.undo(); }
+        
+        if ((e.key === 'Backspace' || e.key === 'Delete') && state.selectedId) {
+            if (state.selectedId === 'fixed-overlay') return;
+            const node = contentLayer.findOne('#' + state.selectedId);
+            if(node) node.destroy(); 
+            app.selectNode(null); app.saveHistory();
+        }
+
+        if (ctrl && e.key.toLowerCase() === 'c' && state.selectedId) {
+            if (state.selectedId === 'fixed-overlay') return;
+            const node = contentLayer.findOne('#' + state.selectedId);
+            if (node) {
+                state.clipboard = {
+                    attrs: node.toObject().attrs,
+                    imageSource: globalImageCache[node.id()]
+                };
+            }
+        }
+
+        if (ctrl && e.key.toLowerCase() === 'v' && state.clipboard) {
+            if (contentLayer.find('.object').length >= CONFIG.MAX_LAYERS) return;
+            
+            const newId = 'img_' + Date.now();
+            const clone = new Konva.Image({
+                ...state.clipboard.attrs,
+                x: state.clipboard.attrs.x + 20,
+                y: state.clipboard.attrs.y + 20,
+                id: newId,
+                image: state.clipboard.imageSource
+            });
+            globalImageCache[newId] = state.clipboard.imageSource;
+
+            app.setupNodeEvents(clone);
+
+            contentLayer.add(clone);
+            app.selectNode(clone);
+            app.saveHistory();
+        }
+    });
+
+    const handleInputEnter = (e, type) => {
+        if (e.key !== 'Enter' || !e.target.value) return;
+        
+        let val = parseFloat(e.target.value);
+        const node = tr.nodes()[0];
+        
+        // [개선 4] 유효하지 않은 값 입력 시 자동 복구 (UX 개선)
+        if (isNaN(val) || val <= 0) {
+            if (node) app.updateInputs(node); // 원래 값으로 복구
+            e.target.blur();
+            return;
+        }
+        
+        if (state.selectedId === 'fixed-overlay' || !node) return;
+        
+        const scale = type === 'w' ? val / node.width() : val / node.height();
+        node.scale({ x: scale, y: scale });
+        if(type === 'w') document.getElementById('input-h').value = Math.round(node.height() * scale);
+        else document.getElementById('input-w').value = Math.round(node.width() * scale);
+        app.saveHistory(); contentLayer.batchDraw(); uiLayer.batchDraw(); e.target.blur();
+    };
+    document.getElementById('input-w').addEventListener('keydown', (e) => handleInputEnter(e, 'w'));
+    document.getElementById('input-h').addEventListener('keydown', (e) => handleInputEnter(e, 'h'));
+
+    const zoomRange = document.getElementById('zoom-range');
+    zoomRange.addEventListener('input', (e) => {
+        document.getElementById('canvas-container').style.transform = `scale(${e.target.value})`;
+        document.getElementById('zoom-val').innerText = Math.round(e.target.value * 100) + '%';
+    });
+    zoomRange.value = 0.8; zoomRange.dispatchEvent(new Event('input'));
+
+</script>
+</body>
+</html>
